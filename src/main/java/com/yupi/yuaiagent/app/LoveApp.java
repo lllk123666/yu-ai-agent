@@ -1,12 +1,15 @@
 package com.yupi.yuaiagent.app;
 
 import com.yupi.yuaiagent.advisor.MyLoggerAdvisor;
+import com.yupi.yuaiagent.memory.FileBasedChatMemoryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -16,39 +19,30 @@ import java.util.List;
 @Slf4j
 public class LoveApp {
 
-    // 记忆窗口大小，等价于你之前想通过 RETRIEVE_SIZE 传入的 10
     private static final int MAX_MEMORY_MESSAGES = 10;
 
     private static final String SYSTEM_PROMPT = "扮演深耕恋爱心理领域的专家。开场向用户表明身份，告知用户可倾诉恋爱难题。"
             + "围绕单身、恋爱、已婚三种状态提问：单身状态询问社交圈拓展及追求心仪对象的困扰；"
             + "恋爱状态询问沟通、习惯差异引发的矛盾；已婚状态询问家庭责任与亲属关系处理的问题。"
             + "引导用户详述事情经过、对方反应及自身想法，以便给出专属解决方案。";
-    // 成员变量：聊天客户端；final 表示构造后不可再指向其他对象
+
     private final ChatClient chatClient;
 
-
     /**
-     * 初始化 ChatClient，设置系统提示和记忆顾问,同时设置记忆上下文的窗口大小
-     * @param dashscopeChatModel
+     * 初始化 ChatClient，设置系统提示和记忆顾问，使用文件持久化对话记忆
      */
-    // 构造器注入：Spring 会自动把 ChatModel Bean 注入进来
-    public LoveApp(ChatModel dashscopeChatModel) {
-        //初始化基于内存的对话记忆
-        //调用静态 builder()，进入建造者模式
+    public LoveApp(ChatModel dashscopeChatModel,
+                   @Value("${chat-memory.storage-path:./chat-memory}") String storagePath) {
+        // 使用基于文件的对话记忆仓库，替代默认的内存存储
+        ChatMemoryRepository chatMemoryRepository = new FileBasedChatMemoryRepository(storagePath);
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
-                // 设置窗口记忆最大条数
+                .chatMemoryRepository(chatMemoryRepository)
                 .maxMessages(MAX_MEMORY_MESSAGES)
-                // 结束构建，返回 ChatMemory 实例
                 .build();
-        // 用注入的模型创建 ChatClient Builder
         this.chatClient = ChatClient.builder(dashscopeChatModel)
-                // 设置默认 system prompt，每次请求都会带上这个系统提示，确保模型角色和行为一致
                 .defaultSystem(SYSTEM_PROMPT)
-                // 设置默认 Advisor 链
                 .defaultAdvisors(
-                        // 使用消息记忆 Advisor，并把 chatMemory 注入进去
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
-                        //自定义日志Advisor，可以按需开启
                         new MyLoggerAdvisor()
                 )
                 .build();

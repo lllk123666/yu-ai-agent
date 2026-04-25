@@ -3,6 +3,8 @@ spring:
     name: yu-ai-agent
   profiles:
     active: local
+chat-memory:
+  storage-path: ./chat-memory
 server:
   port: 8123
   servlet:
