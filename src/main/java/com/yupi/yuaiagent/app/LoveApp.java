@@ -5,10 +5,14 @@ import com.yupi.yuaiagent.chatmemory.FileBasedChatMemoryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -19,33 +23,56 @@ import java.util.List;
 @Slf4j
 public class LoveApp {
 
+    // 对话记忆的最大消息数，超过后旧消息会被裁剪（滑动窗口机制）
     private static final int MAX_MEMORY_MESSAGES = 10;
 
+    // RAG 检索时返回的最相似文档片段数量（Top-K）
+    private static final int RAG_TOP_K = 4;
+
+    // RAG 检索相似度阈值，得分低于该值的文档不会被用作上下文
+    private static final double RAG_SIMILARITY_THRESHOLD = 0.6;
+
+    // 系统提示词，定义 AI 助理的角色定位、行为准则和引导话术
     private static final String SYSTEM_PROMPT = "扮演深耕恋爱心理领域的专家。开场向用户表明身份，告知用户可倾诉恋爱难题。"
             + "围绕单身、恋爱、已婚三种状态提问：单身状态询问社交圈拓展及追求心仪对象的困扰；"
             + "恋爱状态询问沟通、习惯差异引发的矛盾；已婚状态询问家庭责任与亲属关系处理的问题。"
             + "引导用户详述事情经过、对方反应及自身想法，以便给出专属解决方案。";
 
+    // Spring AI 的 ChatClient，用于与大模型交互
     private final ChatClient chatClient;
+
+    // 向量存储，存放恋爱心理领域的知识库文档，用于 RAG 增强检索
+    private final VectorStore loveAppVectorStore;
 
     /**
      * 初始化 ChatClient，设置系统提示和记忆顾问，使用文件持久化对话记忆
+     *
+     * @param dashscopeChatModel   阿里云通义千问大模型实例（由 Spring 注入）
+     * @param loveAppVectorStore   名为 "loveAppVectorStore" 的向量存储 Bean（由 Spring 注入）
+     * @param storagePath          对话记忆文件存储路径，支持配置文件指定，默认 "./chat-memory"
      */
     public LoveApp(ChatModel dashscopeChatModel,
+                   @Qualifier("loveAppVectorStore") VectorStore loveAppVectorStore,
                    @Value("${chat-memory.storage-path:./chat-memory}") String storagePath) {
-        // 使用基于文件的对话记忆仓库，替代默认的内存存储
+        // 创建基于文件系统的对话记忆仓库，实现记忆持久化（重启不丢失）
         ChatMemoryRepository chatMemoryRepository = new FileBasedChatMemoryRepository(storagePath);
+        // 构建基于滑动窗口的对话记忆对象，限制最大消息数，超出后自动淘汰最早的消息
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
-                .chatMemoryRepository(chatMemoryRepository)
-                .maxMessages(MAX_MEMORY_MESSAGES)
+                .chatMemoryRepository(chatMemoryRepository)   // 指定记忆存储仓库（文件持久化）
+                .maxMessages(MAX_MEMORY_MESSAGES)             // 设置会话保留的最大消息数
                 .build();
+        // 构建 ChatClient，配置默认的系统提示词和默认的顾问链
         this.chatClient = ChatClient.builder(dashscopeChatModel)
-                .defaultSystem(SYSTEM_PROMPT)
+                .defaultSystem(SYSTEM_PROMPT)                 // 设置全局默认系统提示词，所有请求都会携带
                 .defaultAdvisors(
+                        // 对话记忆顾问，自动注入历史消息上下文，实现多轮对话记忆
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
+                        // 自定义的日志记录顾问，用于记录请求和响应信息，方便调试与审计
                         new MyLoggerAdvisor()
                 )
                 .build();
+        // 保存注入的向量存储引用，供 RAG 增强对话方法使用
+        this.loveAppVectorStore = loveAppVectorStore;
     }
 
     /**
@@ -84,6 +111,57 @@ public class LoveApp {
         }
 
         log.info("chatId={}", conversationId);
+        return content;
+    }
+
+    /**
+     * AI 对话（支持 RAG 知识库增强 + 多轮对话记忆）
+     * @param message 用户输入
+     * @param chatId 会话 ID
+     * @return 模型回答
+     */
+    public String doChatWithRag(String message, String chatId) {
+        // 校验用户输入消息不能为空或仅包含空白字符，避免无效请求
+        if (!StringUtils.hasText(message)) {
+            // 抛出非法参数异常，明确告知调用方 message 是必填项
+            throw new IllegalArgumentException("message 不能为空");
+        }
+
+        // 确定使用的会话 ID：若传入的 chatId 有效则使用它，否则使用默认会话 ID（如 "default"）
+        // 这样即使不传 chatId 也能实现对话记忆，只是所有匿名对话共享同一记忆
+        String conversationId = StringUtils.hasText(chatId)
+                ? chatId
+                : ChatMemory.DEFAULT_CONVERSATION_ID;
+
+        // 构建 RAG 增强顾问（QuestionAnswerAdvisor），负责根据用户问题从向量存储中检索相关知识
+        // 并将检索到的文档片段注入到上下文中，让大模型能够参考私有知识库回答
+        QuestionAnswerAdvisor questionAnswerAdvisor = QuestionAnswerAdvisor
+                .builder(this.loveAppVectorStore)               // 指定向量存储实例，里面存有业务知识
+                .searchRequest(SearchRequest.builder()          // 构建检索请求配置
+                        .topK(RAG_TOP_K)                         // 设置返回最相似的 Top-K 条文档片段
+                        .similarityThreshold(RAG_SIMILARITY_THRESHOLD) // 设置相似度阈值，低于该值的文档不被采用
+                        .build())                                // 构建 SearchRequest 对象
+                .build();                                       // 构建 QuestionAnswerAdvisor 实例
+
+        // 通过 ChatClient 构建并发送提示词，依次应用多个 Advisor（顾问）处理器
+        String content = this.chatClient
+                .prompt()                                       // 创建一个提示词构建器
+                .user(message)                                  // 设置用户输入的消息内容
+                .advisors(spec -> spec.param(                   // 添加第一个 Advisor：对话记忆顾问
+                        ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
+                ))
+                .advisors(questionAnswerAdvisor)                // 添加第二个 Advisor：RAG 知识库增强顾问
+                .call()                                         // 发送请求并获取模型响应
+                .content();                                     // 提取响应中的文本内容
+
+        // 防御性处理：若模型返回的文本为 null，则置为空字符串，避免上层出现 NullPointerException
+        if (content == null) {
+            content = "";
+        }
+
+        // 记录对话日志，方便追踪不同会话的 RAG 参数和会话 ID
+        log.info("chatId={}, ragTopK={}, ragSimilarityThreshold={}", conversationId, RAG_TOP_K, RAG_SIMILARITY_THRESHOLD);
+        // 返回模型生成的回答文本
         return content;
     }
 
