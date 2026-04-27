@@ -50,4 +50,11 @@ class LoveAppTest {
         Assertions.assertNotNull(answer);
     }
 
+    @Test
+    void doChatWithCloudRag() {
+        String chatId = UUID.randomUUID().toString();
+        String message = "我已经结婚了，婚后夫妻消费观念不同，如何协调理财规划？？";
+        String answer = loveApp.doChatWithCloudRag(message, chatId);
+        Assertions.assertNotNull(answer);
+    }
 }

@@ -5,6 +5,7 @@ import com.yupi.yuaiagent.chatmemory.FileBasedChatMemoryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
@@ -12,6 +13,7 @@ import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -116,6 +118,7 @@ public class LoveApp {
 
     /**
      * AI 对话（支持 RAG 知识库增强 + 多轮对话记忆）
+     * 使用本地知识库
      * @param message 用户输入
      * @param chatId 会话 ID
      * @return 模型回答
@@ -164,6 +167,57 @@ public class LoveApp {
         // 返回模型生成的回答文本
         return content;
     }
+
+
+    // 注入云知识库 RAG 增强顾问（已在 LoveAppRagCloudAdvisorConfig 中配置）
+    @Autowired
+    private Advisor loveAppRagCloudAdvisor;
+
+    /**
+     * AI 对话（支持云知识库增强 + 多轮对话记忆）
+     * 使用阿里云百炼云知识库（DashScope 文档检索）
+     * @param message 用户输入
+     * @param chatId 会话 ID
+     * @return 模型回答
+     */
+    public String doChatWithCloudRag(String message, String chatId) {
+        // 校验用户输入消息不能为空或仅包含空白字符，避免无效请求
+        if (!StringUtils.hasText(message)) {
+            // 抛出非法参数异常，明确告知调用方 message 是必填项
+            throw new IllegalArgumentException("message 不能为空");
+        }
+
+        // 确定使用的会话 ID：若传入的 chatId 有效则使用它，否则使用默认会话 ID（如 "default"）
+        // 这样即使不传 chatId 也能实现对话记忆，只是所有匿名对话共享同一记忆
+        String conversationId = StringUtils.hasText(chatId)
+                ? chatId
+                : ChatMemory.DEFAULT_CONVERSATION_ID;
+
+        // 注意：原来基于本地向量库的 QuestionAnswerAdvisor 已不再需要，
+        // 而是直接使用注入的 RetrievalAugmentationAdvisor，它内部已配置好云知识库检索器
+
+        // 通过 ChatClient 构建并发送提示词，依次应用多个 Advisor（顾问）处理器
+        String content = this.chatClient
+                .prompt()                                       // 创建一个提示词构建器
+                .user(message)                                  // 设置用户输入的消息内容
+                .advisors(spec -> spec.param(                   // 添加第一个 Advisor：对话记忆顾问
+                        ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
+                ))
+                .advisors(loveAppRagCloudAdvisor)               // 添加第二个 Advisor：云知识库增强顾问
+                .call()                                         // 发送请求并获取模型响应
+                .content();                                     // 提取响应中的文本内容
+
+        // 防御性处理：若模型返回的文本为 null，则置为空字符串，避免上层出现 NullPointerException
+        if (content == null) {
+            content = "";
+        }
+
+        // 记录对话日志，方便追踪不同会话和所用知识库信息
+        log.info("chatId={}, using cloud knowledge base index: 恋爱大师", conversationId);
+        // 返回模型生成的回答文本
+        return content;
+    }
+
 
 
     // 定义 Java 记录类：不可变数据载体，自动生成构造器、访问器、toString 等
