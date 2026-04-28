@@ -78,8 +78,9 @@ public class LoveApp {
         // 构建 ChatClient，配置默认的系统提示词和默认的顾问链
         this.chatClient = ChatClient.builder(dashscopeChatModel)
                 .defaultSystem(SYSTEM_PROMPT)                 // 设置全局默认系统提示词，所有请求都会携带
-                .defaultAdvisors(
-                        // 对话记忆顾问，自动注入历史消息上下文，实现多轮对话记忆
+                .defaultAdvisors(//设置全局默认顾问链，所有请求都会依次应用这些顾问
+                        // 对话记忆顾问，根据方法中动态指定的会话ID,自动注入历史消息上下文，
+                        // 实现多轮对话记忆功能
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
                         // 自定义的日志记录顾问，用于记录请求和响应信息，方便调试与审计
                         new MyLoggerAdvisor()
@@ -109,11 +110,12 @@ public class LoveApp {
                 : ChatMemory.DEFAULT_CONVERSATION_ID;
         // 使用当前对象的 chatClient 发起调用
         String content = this.chatClient
-                // 创建一次新的请求上下文
                 .prompt()
                 // 设置用户消息
                 .user(message)
-                // Lambda：给本次调用注入会话ID参数
+                // Lambda：给本次调用注入会话ID参数,
+                // 让记忆顾问MessageChatMemoryAdvisor知道当前对话属于哪个会话，
+                // 从而正确注入历史上下文
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, conversationId))
                 // 执行同步调用
                 .call()
