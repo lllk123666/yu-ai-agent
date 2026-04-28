@@ -2,6 +2,9 @@ package com.yupi.yuaiagent.app;
 
 import com.yupi.yuaiagent.advisor.MyLoggerAdvisor;
 import com.yupi.yuaiagent.chatmemory.FileBasedChatMemoryRepository;
+import com.yupi.yuaiagent.rag.LoveAppContextualQueryAugmenterFactory;
+import com.yupi.yuaiagent.rag.QueryRewriter;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -11,8 +14,13 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
+import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
+import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,12 +54,16 @@ public class LoveApp {
     // 向量存储，存放恋爱心理领域的知识库文档，用于 RAG 增强检索
     private final VectorStore loveAppVectorStore;
 
+    //查询重写
+    @Resource
+    private QueryRewriter queryRewriter;
+
     /**
      * 初始化 ChatClient，设置系统提示和记忆顾问，使用文件持久化对话记忆
      *
-     * @param dashscopeChatModel   阿里云通义千问大模型实例（由 Spring 注入）
-     * @param loveAppVectorStore   名为 "loveAppVectorStore" 的向量存储 Bean（由 Spring 注入）
-     * @param storagePath          对话记忆文件存储路径，支持配置文件指定，默认 "./chat-memory"
+     * @param dashscopeChatModel 阿里云通义千问大模型实例（由 Spring 注入）
+     * @param loveAppVectorStore 名为 "loveAppVectorStore" 的向量存储 Bean（由 Spring 注入）
+     * @param storagePath        对话记忆文件存储路径，支持配置文件指定，默认 "./chat-memory"
      */
     public LoveApp(ChatModel dashscopeChatModel,
                    @Qualifier("loveAppVectorStore") VectorStore loveAppVectorStore,
@@ -79,6 +91,7 @@ public class LoveApp {
 
     /**
      * AI 基础对话（支持多轮对话记忆）
+     *
      * @param message
      * @param chatId
      * @return
@@ -119,16 +132,19 @@ public class LoveApp {
     /**
      * AI 对话（支持 RAG 知识库增强 + 多轮对话记忆）
      * 使用本地知识库
+     *
      * @param message 用户输入
-     * @param chatId 会话 ID
+     * @param chatId  会话 ID
      * @return 模型回答
      */
-    public String doChatWithRag(String message, String chatId) {
+    public String doChatWithRag(String message, String chatId, String status) {
         // 校验用户输入消息不能为空或仅包含空白字符，避免无效请求
         if (!StringUtils.hasText(message)) {
             // 抛出非法参数异常，明确告知调用方 message 是必填项
             throw new IllegalArgumentException("message 不能为空");
         }
+        //查询重写用户的信息
+        String rewrittenMessage = queryRewriter.doQueryRewrite(message);
 
         // 确定使用的会话 ID：若传入的 chatId 有效则使用它，否则使用默认会话 ID（如 "default"）
         // 这样即使不传 chatId 也能实现对话记忆，只是所有匿名对话共享同一记忆
@@ -136,24 +152,31 @@ public class LoveApp {
                 ? chatId
                 : ChatMemory.DEFAULT_CONVERSATION_ID;
 
-        // 构建 RAG 增强顾问（QuestionAnswerAdvisor），负责根据用户问题从向量存储中检索相关知识
-        // 并将检索到的文档片段注入到上下文中，让大模型能够参考私有知识库回答
-        QuestionAnswerAdvisor questionAnswerAdvisor = QuestionAnswerAdvisor
-                .builder(this.loveAppVectorStore)               // 指定向量存储实例，里面存有业务知识
-                .searchRequest(SearchRequest.builder()          // 构建检索请求配置
-                        .topK(RAG_TOP_K)                         // 设置返回最相似的 Top-K 条文档片段
-                        .similarityThreshold(RAG_SIMILARITY_THRESHOLD) // 设置相似度阈值，低于该值的文档不被采用
-                        .build())                                // 构建 SearchRequest 对象
-                .build();                                       // 构建 QuestionAnswerAdvisor 实例
+        // 构建过滤条件，假设每个文档在存入向量库时都带有 "status" 这个元数据字段
+        Filter.Expression filterExpression = new FilterExpressionBuilder()
+                .eq("status", status)   // 只检索 status=published 的文档
+                .build();
+        // 构造带过滤的文档检索器
+        DocumentRetriever documentRetrieve = VectorStoreDocumentRetriever.builder()
+                .vectorStore(loveAppVectorStore)          // 需要用到的向量库,指定向量存储实例，里面存有业务知识
+                .filterExpression(filterExpression)       // 文档过滤条件
+                .similarityThreshold(RAG_SIMILARITY_THRESHOLD)  // 设置相似度阈值，低于该值的文档不被采用
+                .topK(RAG_TOP_K)                           // 设置返回最相似的 Top-K 条文档片段
+                .build();
+        // 生成 LoveAppRagCustomAdvisor
+        Advisor LoveAppRagCustomAdvisor = RetrievalAugmentationAdvisor.builder()
+                .documentRetriever(documentRetrieve)
+                .queryAugmenter(LoveAppContextualQueryAugmenterFactory.createInstance())
+                .build();                                      // 构建 RetrievalAugmentationAdvisor 实例
 
         // 通过 ChatClient 构建并发送提示词，依次应用多个 Advisor（顾问）处理器
         String content = this.chatClient
                 .prompt()                                       // 创建一个提示词构建器
-                .user(message)                                  // 设置用户输入的消息内容
+                .user(rewrittenMessage)                                  // 设置用户输入的消息内容(经过查询重写后的）
                 .advisors(spec -> spec.param(                   // 添加第一个 Advisor：对话记忆顾问
                         ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
                 ))
-                .advisors(questionAnswerAdvisor)                // 添加第二个 Advisor：RAG 知识库增强顾问
+                .advisors(LoveAppRagCustomAdvisor)                // 添加第二个 Advisor：RAG 本地知识库增强顾问
                 .call()                                         // 发送请求并获取模型响应
                 .content();                                     // 提取响应中的文本内容
 
@@ -176,8 +199,9 @@ public class LoveApp {
     /**
      * AI 对话（支持云知识库增强 + 多轮对话记忆）
      * 使用阿里云百炼云知识库（DashScope 文档检索）
+     *
      * @param message 用户输入
-     * @param chatId 会话 ID
+     * @param chatId  会话 ID
      * @return 模型回答
      */
     public String doChatWithCloudRag(String message, String chatId) {
@@ -219,13 +243,13 @@ public class LoveApp {
     }
 
 
-
     // 定义 Java 记录类：不可变数据载体，自动生成构造器、访问器、toString 等
     record LoveReport(String title, List<String> suggestions) {
     }
 
     /**
      * AI 对话并且生成恋爱报告
+     *
      * @param message
      * @param chatId
      * @param username

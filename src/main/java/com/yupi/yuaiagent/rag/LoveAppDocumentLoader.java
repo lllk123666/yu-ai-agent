@@ -49,6 +49,7 @@ public class LoveAppDocumentLoader {
         // 7. 创建空集合，用于存储所有读取到的 Markdown 文档
         List<Document> allDocuments = new ArrayList<>();
 
+
         try {
             // 8. 核心代码：批量读取文件
             // classpath:document/*.md  →  读取 resources 目录下 document 文件夹里 所有 .md 文件
@@ -64,7 +65,9 @@ public class LoveAppDocumentLoader {
             for (Resource resource : resources) {
                 // 11. 获取当前文件的文件名（比如：help.md、user.md）
                 String fileName = resource.getFilename();
-
+                //提取文档倒数第三个字和倒数第二个字作为标签,给每个文档设置状态
+                //状态有"单身","已婚","恋爱"三种
+                String status=fileName.substring(fileName.length()-6,fileName.length()-4);
                 // 12. 构建 Markdown 读取配置（建造者模式，自定义读取规则）
                 MarkdownDocumentReaderConfig config = MarkdownDocumentReaderConfig.builder()
                         // 遇到 Markdown 水平分割线 --- 时，分割为独立文档
@@ -75,6 +78,8 @@ public class LoveAppDocumentLoader {
                         .withIncludeBlockquote(false)
                         // 给文档添加自定义元数据：记录当前文件的文件名
                         .withAdditionalMetadata("filename", fileName)
+                        //给文档添加自定义元数据：记录当前文件所属的状态
+                        .withAdditionalMetadata("status", status)
                         // 构建配置对象
                         .build();
 
