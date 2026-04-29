@@ -7,12 +7,12 @@ spring:
     mcp:
       client:
         request-timeout: 60s
-        sse:
-          connections:
-            server1:
-                url: http://localhost:8127
-#        stdio:
-#          servers-configuration: classpath:mcp-servers.json
+#        sse:
+#          connections:
+#            server1:
+#                url: http://localhost:8127
+        stdio:
+          servers-configuration: classpath:mcp-servers.json
 chat-memory:
   storage-path: ./chat-memory
 server:
