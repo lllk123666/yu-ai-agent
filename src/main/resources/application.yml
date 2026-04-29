@@ -3,6 +3,12 @@ spring:
     name: yu-ai-agent
   profiles:
     active: local
+  ai:
+    mcp:
+      client:
+        request-timeout: 60s
+        stdio:
+          servers-configuration: classpath:mcp-servers.json
 chat-memory:
   storage-path: ./chat-memory
 server:

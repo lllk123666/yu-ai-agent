@@ -50,6 +50,19 @@ public class LoveApp {
             + "恋爱状态询问沟通、习惯差异引发的矛盾；已婚状态询问家庭责任与亲属关系处理的问题。"
             + "引导用户详述事情经过、对方反应及自身想法，以便给出专属解决方案。";
 
+    private static final String MCP_SYSTEM_PROMPT = "你可以调用外部 MCP 工具。"
+            + "当用户请求搜索图片、查找图片、推荐图片或获取图片链接时，"
+            + "必须调用 MCP 图片搜索工具获取真实图片链接，不要只给通用建议，"
+            + "不要追问用户恋爱状态。回答必须直接包含工具返回的图片 URL。";
+
+    private static final String IMAGE_SEARCH_PROMPT_TEMPLATE = """
+            用户要搜索图片：%s
+
+            请必须调用 MCP 图片搜索工具，搜索关键词使用英文，例如 happy couple 或 romantic couple。
+            最终回答必须列出工具返回的原始图片 URL；如果工具返回错误，请直接说明错误原因。
+            不要只提供恋爱建议，不要追问关系状态。
+            """;
+
     // Spring AI 的 ChatClient，用于与大模型交互
     private final ChatClient chatClient;
 
@@ -271,11 +284,15 @@ public class LoveApp {
         String conversationId = StringUtils.hasText(chatId)
                 ? chatId
                 : ChatMemory.DEFAULT_CONVERSATION_ID;
+        String userMessage = isImageSearchRequest(message)
+                ? IMAGE_SEARCH_PROMPT_TEMPLATE.formatted(message)
+                : message;
 
         // 通过 ChatClient 构建并发送提示词，依次应用多个 Advisor（顾问）处理器
         String content = this.chatClient
                 .prompt()                                       // 创建一个提示词构建器
-                .user(message)                                  // 设置用户输入的消息内容(经过查询重写后的）
+                .system(MCP_SYSTEM_PROMPT)
+                .user(userMessage)                                  // 设置用户消息，图片搜索场景会强化工具调用要求
                 .advisors(spec -> spec.param(                   // 添加第一个 Advisor：对话记忆顾问
                         ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
                 ))
@@ -292,6 +309,14 @@ public class LoveApp {
         log.info("chatId={}, ragTopK={}, ragSimilarityThreshold={}", conversationId, RAG_TOP_K, RAG_SIMILARITY_THRESHOLD);
         // 返回模型生成的回答文本
         return content;
+    }
+
+    private boolean isImageSearchRequest(String message) {
+        String lowerMessage = message.toLowerCase();
+        return lowerMessage.contains("图片")
+                || lowerMessage.contains("image")
+                || lowerMessage.contains("photo")
+                || lowerMessage.contains("picture");
     }
 
 
