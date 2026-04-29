@@ -2,6 +2,7 @@
 application-local.yml
 chat-memory/
 tmp
+mcp-servers.json
 
 HELP.md
 target/

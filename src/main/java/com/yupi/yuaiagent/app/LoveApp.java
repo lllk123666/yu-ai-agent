@@ -18,6 +18,7 @@ import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.retrieval.search.DocumentRetriever;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
@@ -62,6 +63,11 @@ public class LoveApp {
     //工具调用
     @Resource
     private ToolCallback[] allTools;
+
+    //调用MCP服务
+    @Resource
+    private ToolCallbackProvider mcpToolCallbackProvider;
+
 
     /**
      * 初始化 ChatClient，设置系统提示和记忆顾问，使用文件持久化对话记忆
@@ -230,6 +236,50 @@ public class LoveApp {
                         ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
                 ))
                 .toolCallbacks(allTools)                                  // 添加工具调用器，允许模型在对话中调用预定义的工具函数
+                .call()                                         // 发送请求并获取模型响应
+                .content();                                     // 提取响应中的文本内容
+
+        // 防御性处理：若模型返回的文本为 null，则置为空字符串，避免上层出现 NullPointerException
+        if (content == null) {
+            content = "";
+        }
+
+        // 记录对话日志，方便追踪不同会话的 RAG 参数和会话 ID
+        log.info("chatId={}, ragTopK={}, ragSimilarityThreshold={}", conversationId, RAG_TOP_K, RAG_SIMILARITY_THRESHOLD);
+        // 返回模型生成的回答文本
+        return content;
+    }
+
+
+    /**
+     * AI 对话（支持 RAG 知识库增强 + 多轮对话记忆）
+     * 使用MCP（Memory Contextual Prompting）机制,调用远程MCP服务器提供的功能
+     *
+     * @param message 用户输入
+     * @param chatId  会话 ID
+     * @return 模型回答
+     */
+    public String doChatWithMcp(String message, String chatId) {
+        // 校验用户输入消息不能为空或仅包含空白字符，避免无效请求
+        if (!StringUtils.hasText(message)) {
+            // 抛出非法参数异常，明确告知调用方 message 是必填项
+            throw new IllegalArgumentException("message 不能为空");
+        }
+
+        // 确定使用的会话 ID：若传入的 chatId 有效则使用它，否则使用默认会话 ID（如 "default"）
+        // 这样即使不传 chatId 也能实现对话记忆，只是所有匿名对话共享同一记忆
+        String conversationId = StringUtils.hasText(chatId)
+                ? chatId
+                : ChatMemory.DEFAULT_CONVERSATION_ID;
+
+        // 通过 ChatClient 构建并发送提示词，依次应用多个 Advisor（顾问）处理器
+        String content = this.chatClient
+                .prompt()                                       // 创建一个提示词构建器
+                .user(message)                                  // 设置用户输入的消息内容(经过查询重写后的）
+                .advisors(spec -> spec.param(                   // 添加第一个 Advisor：对话记忆顾问
+                        ChatMemory.CONVERSATION_ID, conversationId  // 指定当前会话 ID，实现多轮对话记忆
+                ))
+                .toolCallbacks(mcpToolCallbackProvider)                                  // 添加工具调用器，允许模型在对话中调用预定义的工具函数
                 .call()                                         // 发送请求并获取模型响应
                 .content();                                     // 提取响应中的文本内容
 
