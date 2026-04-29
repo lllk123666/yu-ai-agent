@@ -5,7 +5,7 @@ spring:
         name: yu-image-search-mcp-server
         version: 0.0.1
         type: SYNC
-        # stdio
+        # stdio server 输出方式，适用于本地调试和测试，生产环境建议使用 SSE Server-Sent Events 输出方式
         stdio: true
   # stdio
   main:

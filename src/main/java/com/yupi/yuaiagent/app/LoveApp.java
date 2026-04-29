@@ -28,6 +28,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Flux;
 
 import java.util.List;
 
@@ -150,6 +151,43 @@ public class LoveApp {
             // 统一转为空串，避免上层空指针
             content = "";
         }
+
+        log.info("chatId={}", conversationId);
+        return content;
+    }
+
+
+    /**
+     * AI 基础对话（支持多轮对话记忆,SSE流式传输）
+     *
+     * @param message
+     * @param chatId
+     * @return
+     */
+    // 公开方法：输入用户消息和会话ID，返回模型回答
+    public Flux<String> doChatByStream(String message, String chatId) {
+        if (!StringUtils.hasText(message)) {
+            throw new IllegalArgumentException("message 不能为空");
+        }
+        // 三元表达式条件部分：chatId 是否有效
+        // 条件为真，使用传入 chatId
+        // 条件为假，使用默认会话ID，保证程序仍可运行但没有连续上下文
+        String conversationId = StringUtils.hasText(chatId)
+                ? chatId
+                : ChatMemory.DEFAULT_CONVERSATION_ID;
+        // 使用当前对象的 chatClient 发起流式调用
+        Flux<String> content = this.chatClient
+                .prompt()
+                // 设置用户消息
+                .user(message)
+                // Lambda：给本次调用注入会话ID参数,
+                // 让记忆顾问MessageChatMemoryAdvisor知道当前对话属于哪个会话，
+                // 从而正确注入历史上下文
+                .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, conversationId))
+                // 执行流式调用
+                .stream()
+                // 直接返回模型流式输出的文本片段
+                .content();
 
         log.info("chatId={}", conversationId);
         return content;

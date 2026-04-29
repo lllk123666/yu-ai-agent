@@ -5,5 +5,5 @@ spring:
         name: yu-image-search-mcp-server
         version: 0.0.1
         type: SYNC
-        # sse
+        # sse Server-Sent Events 输出方式
         stdio: false
