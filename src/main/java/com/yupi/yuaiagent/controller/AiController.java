@@ -26,7 +26,7 @@ public class AiController {
     private ChatModel dashscopeChatModel;
 
     /**
-     * 同步接口
+     * 恋爱大师 同步接口
      * @param message
      * @param chatId
      * @return
@@ -38,7 +38,7 @@ public class AiController {
 
 
     /**
-     * SSE接口
+     * 恋爱大师 SSE接口
      * @param message
      * @param chatId
      * @return
