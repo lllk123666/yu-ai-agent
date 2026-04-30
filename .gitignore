@@ -3,6 +3,7 @@ application-local.yml
 chat-memory/
 tmp
 mcp-servers.json
+application-prod.yml
 
 HELP.md
 target/

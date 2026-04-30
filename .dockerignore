@@ -1,0 +1,10 @@
+.git
+.gitignore
+.idea
+*.iml
+.DS_Store
+target
+yu-image-search-mcp
+*.md
+Dockerfile
+.dockerignore
